@@ -243,7 +243,7 @@ async def main(page: ft.Page):
         await page.push_route("/history")
 
     async def nav_to_cafe(e):
-        page.launch_url("https://cafe.naver.com/yjbooks")
+        await page.launch_url("https://cafe.naver.com/yjbooks")
 
     async def nav_to_home(e):
         await page.push_route("/")
@@ -677,4 +677,5 @@ if __name__ == "__main__":
     # Render 서버가 부여하는 PORT 환경변수를 가져오되, 로컬 테스트 시에는 8550을 사용합니다.
     port = int(os.environ.get("PORT", 8550))
     # host="0.0.0.0" 옵션은 외부망 접속을 허용하는 필수 웹 서버 설정입니다.
+
     ft.run(main, view=ft.AppView.WEB_BROWSER, port=port, host="0.0.0.0")
