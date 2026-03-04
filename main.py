@@ -14,11 +14,9 @@ DB_URL = os.environ.get("SUPABASE_DB_URL")
 if not DB_URL:
     print("[경고] .env 파일에 SUPABASE_DB_URL이 설정되지 않았습니다.")
 
-
 # [모듈 1] 클라우드 데이터베이스 연결 및 문제 조회 엔진
 def get_db_connection():
     return psycopg2.connect(DB_URL, cursor_factory=psycopg2.extras.DictCursor)
-
 
 def get_random_question(topic_id=None):
     try:
@@ -27,19 +25,19 @@ def get_random_question(topic_id=None):
 
         if topic_id:
             cursor.execute("""
-                           SELECT q.*, t."Topic_Name"
-                           FROM questions q
-                                    LEFT JOIN topics t ON q."Topic_ID" = t."ID"
-                           WHERE q."Topic_ID" = %s
-                           ORDER BY RANDOM() LIMIT 1
-                           """, (topic_id,))
+                SELECT q.*, t."Topic_Name" 
+                FROM questions q 
+                LEFT JOIN topics t ON q."Topic_ID" = t."ID" 
+                WHERE q."Topic_ID" = %s 
+                ORDER BY RANDOM() LIMIT 1
+            """, (topic_id,))
         else:
             cursor.execute("""
-                           SELECT q.*, t."Topic_Name"
-                           FROM questions q
-                                    LEFT JOIN topics t ON q."Topic_ID" = t."ID"
-                           ORDER BY RANDOM() LIMIT 1
-                           """)
+                SELECT q.*, t."Topic_Name" 
+                FROM questions q 
+                LEFT JOIN topics t ON q."Topic_ID" = t."ID" 
+                ORDER BY RANDOM() LIMIT 1
+            """)
 
         row = cursor.fetchone()
         conn.close()
@@ -48,22 +46,20 @@ def get_random_question(topic_id=None):
         print(f"[시스템] 랜덤 문제 조회 실패: {e}")
         return None
 
-
-def get_review_question(nickname):
+def get_review_question(session_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
+        
         cursor.execute("""
-                       SELECT q.*, t."Topic_Name"
-                       FROM questions q
-                                LEFT JOIN topics t ON q."Topic_ID" = t."ID"
-                                JOIN solve_history h ON q."ID" = h.question_id
-                       WHERE h.session_id = %s
-                         AND h.is_correct = 0
-                       ORDER BY RANDOM() LIMIT 1
-                       """, (nickname,))
-
+            SELECT q.*, t."Topic_Name" 
+            FROM questions q 
+            LEFT JOIN topics t ON q."Topic_ID" = t."ID" 
+            JOIN solve_history h ON q."ID" = h.question_id
+            WHERE h.session_id = %s AND h.is_correct = 0
+            ORDER BY RANDOM() LIMIT 1
+        """, (session_id,))
+        
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
@@ -71,9 +67,8 @@ def get_review_question(nickname):
         print(f"[시스템] 복습 문제 조회 실패: {e}")
         return None
 
-
-# [모듈 2] 학습 이력 클라우드 DB 저장 및 제어 엔진
-def save_solve_history(nickname, q_id, user_answer, is_correct, elapsed_time):
+# [모듈 2] 학습 이력 클라우드 DB 저장 및 제어 엔진 (session_id 기반)
+def save_solve_history(session_id, q_id, user_answer, is_correct, elapsed_time):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -81,21 +76,20 @@ def save_solve_history(nickname, q_id, user_answer, is_correct, elapsed_time):
         time_taken_int = int(elapsed_time)
         cursor.execute(
             "INSERT INTO solve_history (question_id, user_answer, is_correct, solved_at, time_taken, session_id) VALUES (%s, %s, %s, %s, %s, %s)",
-            (q_id, user_answer, is_correct, now, time_taken_int, nickname)
+            (q_id, user_answer, is_correct, now, time_taken_int, session_id)
         )
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[시스템] 학습 이력 저장 실패: {e}")
 
-
-def auto_clean_history(nickname, days=30):
+def auto_clean_history(session_id, days=30):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             f"DELETE FROM solve_history WHERE session_id = %s AND solved_at < NOW() - INTERVAL '{days} days'",
-            (nickname,)
+            (session_id,)
         )
         deleted_count = cursor.rowcount
         conn.commit()
@@ -105,36 +99,33 @@ def auto_clean_history(nickname, days=30):
     except Exception as e:
         print(f"[시스템] 자동 초기화 실패: {e}")
 
-
-def clear_all_history(nickname):
+def clear_all_history(session_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM solve_history WHERE session_id = %s", (nickname,))
+        cursor.execute("DELETE FROM solve_history WHERE session_id = %s", (session_id,))
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[시스템] 수동 초기화 실패: {e}")
 
-
 # [모듈 3] 문제 신고 클라우드 DB 저장 엔진
-def save_report(q_id, nickname, reason):
+def save_report(q_id, session_id, reason):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
             "INSERT INTO reports (question_id, session_id, comment, reported_at) VALUES (%s, %s, %s, %s)",
-            (q_id, nickname, reason, now)
+            (q_id, session_id, reason, now)
         )
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"[시스템] 문제 신고 저장 실패: {e}")
 
-
 # [모듈 4] 토픽별 학습 통계 조회 엔진
-def get_topic_statistics(nickname):
+def get_topic_statistics(session_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -149,7 +140,7 @@ def get_topic_statistics(nickname):
                        WHERE h.session_id = %s
                        GROUP BY q."Topic_ID", t."Topic_Name"
                        ORDER BY (CAST(SUM(h.is_correct) AS FLOAT) / COUNT(*)) ASC, COUNT(*) DESC
-                       """, (nickname,))
+                       """, (session_id,))
         rows = cursor.fetchall()
         conn.close()
 
@@ -172,12 +163,9 @@ def get_topic_statistics(nickname):
         print(f"[시스템] 통계 조회 실패: {e}")
         return []
 
-
-# [모듈 5] 메인 컨트롤러 (웹 최적화)
+# [모듈 5] 메인 컨트롤러
 def main(page: ft.Page):
     page.title = "올인원 필수암기 문제풀이"
-    page.window.width = 450
-    page.window.height = 800
     page.theme_mode = ft.ThemeMode.LIGHT
 
     def navigate(route_name):
@@ -186,19 +174,26 @@ def main(page: ft.Page):
 
         # --- 1. 진입 화면 (로그인) ---
         if route_name == "/":
-            nickname_input = ft.TextField(label="닉네임 입력", width=300, hint_text="이름을 입력하세요.")
+            nickname_input = ft.TextField(label="닉네임", width=145, hint_text="이름")
+            # [추가] 4자리 PIN 입력 필드 (비밀번호 마스킹 처리, 숫자 키패드 호출)
+            pin_input = ft.TextField(label="PIN (4자리)", width=145, password=True, max_length=4, keyboard_type=ft.KeyboardType.NUMBER)
 
             def on_start(e):
-                if nickname_input.value:
-                    nick = nickname_input.value
-
-                    # 브라우저 탭 단위의 독립 세션에만 닉네임 저장 (충돌 0%)
+                if nickname_input.value and pin_input.value:
+                    nick = nickname_input.value.strip()
+                    pin = pin_input.value.strip()
+                    
+                    # [핵심] 닉네임과 PIN을 결합하여 고유한 식별자(session_id) 생성
+                    unique_session_id = f"{nick}#{pin}"
+                    
+                    # UI 표시용 닉네임과 DB 통신용 session_id를 각각 분리하여 저장
                     page.session.store.set("user_nickname", nick)
-
-                    auto_clean_history(nick, days=30)
+                    page.session.store.set("session_id", unique_session_id)
+                    
+                    auto_clean_history(unique_session_id, days=30)
                     navigate("/home")
                 else:
-                    snack = ft.SnackBar(content=ft.Text("닉네임을 입력하세요."))
+                    snack = ft.SnackBar(content=ft.Text("닉네임과 4자리 PIN을 모두 입력하세요."))
                     page.overlay.append(snack)
                     snack.open = True
                     page.update()
@@ -206,11 +201,12 @@ def main(page: ft.Page):
             page.views.append(ft.View(
                 route="/",
                 controls=[
-                    ft.Icon(ft.Icons.MENU_BOOK, size=50, color="#2196F3"),
-                    ft.Text("올인원 필수암기", size=30, weight=ft.FontWeight.BOLD),
+                    #ft.Icon(ft.Icons.MENU_BOOK, size=50, color="#2196F3"),
+                    ft.Text("정보처리기사 All In One", size=30, weight=ft.FontWeight.BOLD),
+                    ft.Text("필수암기 문제풀이", size=30, weight=ft.FontWeight.BOLD),
                     ft.Container(height=20),
-                    nickname_input,
-                    ft.Text("※ 클라우드 서버 연동 완료. 데이터가 영구 보존됩니다.", size=12, color="#1976D2"),
+                    ft.Row([nickname_input, pin_input], alignment=ft.MainAxisAlignment.CENTER),
+                    ft.Text("※ 다른 사람과 이력이 겹치지 않도록 PIN을 꼭 기억해 주세요.", size=12, color="#F44336"),
                     ft.Container(height=20),
                     ft.Button(content=ft.Text("학습 시작하기"), on_click=on_start, width=300)
                 ],
@@ -241,6 +237,7 @@ def main(page: ft.Page):
         # --- 3. 랜덤 문제 풀기 화면 ---
         elif route_name == "/random":
             nickname = page.session.store.get("user_nickname") or "학습자"
+            session_id = page.session.store.get("session_id")
             target_topic_id = page.session.store.get("target_topic_id")
 
             q = get_random_question(target_topic_id)
@@ -281,7 +278,7 @@ def main(page: ft.Page):
                     correct = q["Ans"]
                     is_correct = 1 if selected == int(correct) else 0
 
-                    save_solve_history(nickname, question_id, selected, is_correct, elapsed_time)
+                    save_solve_history(session_id, question_id, selected, is_correct, elapsed_time)
 
                     title_text = "🎉 정답입니다!" if is_correct else f"❌ 오답입니다. (정답: {correct}번)"
                     title_color = "#4CAF50" if is_correct else "#F44336"
@@ -323,7 +320,7 @@ def main(page: ft.Page):
 
                     def submit_report(e):
                         if reason_input.value:
-                            save_report(question_id, nickname, reason_input.value)
+                            save_report(question_id, session_id, reason_input.value)
                             report_dialog.open = False
                             snack = ft.SnackBar(content=ft.Text("신고가 정상 접수되었습니다."), bgcolor="#4CAF50")
                             page.overlay.append(snack)
@@ -377,12 +374,13 @@ def main(page: ft.Page):
         # --- 4. 오답 복습 문제 풀기 화면 ---
         elif route_name == "/review":
             nickname = page.session.store.get("user_nickname") or "학습자"
-            q = get_review_question(nickname)
+            session_id = page.session.store.get("session_id")
+            q = get_review_question(session_id)
 
             appbar = ft.AppBar(
                 title=ft.Text("스마트 오답 복습", size=16, weight=ft.FontWeight.BOLD),
                 actions=[ft.IconButton(icon=ft.Icons.HOME, on_click=lambda _: navigate("/home"), tooltip="홈으로 이동")],
-                bgcolor="#FFEBEE"
+                bgcolor="#FFEBEE" 
             )
 
             if not q:
@@ -392,8 +390,7 @@ def main(page: ft.Page):
                     controls=[
                         ft.Icon(ft.Icons.STAR, size=60, color="#FFC107"),
                         ft.Container(height=10),
-                        ft.Text("현재 복습할 오답이 없습니다!\n완벽합니다 🎉", text_align=ft.TextAlign.CENTER, size=18,
-                                weight=ft.FontWeight.BOLD),
+                        ft.Text("현재 복습할 오답이 없습니다!\n완벽합니다 🎉", text_align=ft.TextAlign.CENTER, size=18, weight=ft.FontWeight.BOLD),
                         ft.Container(height=20),
                         ft.Button(content=ft.Text("메인으로 돌아가기"), on_click=lambda _: navigate("/home"), width=300)
                     ],
@@ -412,7 +409,7 @@ def main(page: ft.Page):
                     correct = q["Ans"]
                     is_correct = 1 if selected == int(correct) else 0
 
-                    save_solve_history(nickname, question_id, selected, is_correct, elapsed_time)
+                    save_solve_history(session_id, question_id, selected, is_correct, elapsed_time)
 
                     title_text = "🎉 정답입니다!" if is_correct else f"❌ 또 틀렸습니다. (정답: {correct}번)"
                     title_color = "#4CAF50" if is_correct else "#F44336"
@@ -420,7 +417,7 @@ def main(page: ft.Page):
                     def go_next_review(e):
                         result_dialog.open = False
                         page.update()
-                        navigate("/review")
+                        navigate("/review") 
 
                     result_dialog = ft.AlertDialog(
                         title=ft.Text(title_text, color=title_color, weight=ft.FontWeight.BOLD),
@@ -468,11 +465,12 @@ def main(page: ft.Page):
         # --- 5. 취약점 진단 대시보드 화면 ---
         elif route_name == "/history":
             nickname = page.session.store.get("user_nickname") or "학습자"
-            stats_data = get_topic_statistics(nickname)
+            session_id = page.session.store.get("session_id")
+            stats_data = get_topic_statistics(session_id)
 
             def open_reset_dialog(e):
                 def do_reset(e):
-                    clear_all_history(nickname)
+                    clear_all_history(session_id)
                     reset_dialog.open = False
                     page.update()
                     navigate("/history")
@@ -500,8 +498,7 @@ def main(page: ft.Page):
             appbar = ft.AppBar(
                 title=ft.Text("취약점 진단 대시보드", weight=ft.FontWeight.BOLD),
                 actions=[
-                    ft.IconButton(icon=ft.Icons.DELETE_FOREVER, icon_color="#F44336", on_click=open_reset_dialog,
-                                  tooltip="이력 초기화"),
+                    ft.IconButton(icon=ft.Icons.DELETE_FOREVER, icon_color="#F44336", on_click=open_reset_dialog, tooltip="이력 초기화"),
                     ft.IconButton(icon=ft.Icons.HOME, on_click=lambda _: navigate("/home"), tooltip="홈으로 이동")
                 ],
                 bgcolor="#F2F2F2"
@@ -587,8 +584,6 @@ def main(page: ft.Page):
     page.on_view_pop = view_pop
     navigate("/")
 
-
 if __name__ == "__main__":
-    # Render 환경의 PORT 변수를 가져와 웹 서버로 직접 실행 (기본값 8080)
     port = int(os.environ.get("PORT", 8080))
     ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=port)
