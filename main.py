@@ -174,9 +174,9 @@ def main(page: ft.Page):
 
         # --- 1. 진입 화면 (로그인) ---
         if route_name == "/":
-            nickname_input = ft.TextField(label="닉네임", width=145, hint_text="이름")
+            nickname_input = ft.TextField(label="닉네임", width=300, hint_text="이름")
             # [추가] 4자리 PIN 입력 필드 (비밀번호 마스킹 처리, 숫자 키패드 호출)
-            pin_input = ft.TextField(label="PIN (4자리)", width=145, password=True, max_length=4, keyboard_type=ft.KeyboardType.NUMBER)
+            pin_input = ft.TextField(label="PIN (4자리)", width=300, password=True, max_length=4, keyboard_type=ft.KeyboardType.NUMBER)
 
             def on_start(e):
                 if nickname_input.value and pin_input.value:
@@ -205,7 +205,9 @@ def main(page: ft.Page):
                     ft.Text("정보처리기사 All In One", size=30, weight=ft.FontWeight.BOLD),
                     ft.Text("필수암기 문제풀이", size=30, weight=ft.FontWeight.BOLD),
                     ft.Container(height=20),
-                    ft.Row([nickname_input, pin_input], alignment=ft.MainAxisAlignment.CENTER),
+                    #ft.Row([nickname_input, pin_input], alignment=ft.MainAxisAlignment.CENTER),
+                    nickname_input,
+                    pin_input,
                     ft.Text("※ 다른 사람과 이력이 겹치지 않도록 PIN을 꼭 기억해 주세요.", size=12, color="#F44336"),
                     ft.Container(height=20),
                     ft.Button(content=ft.Text("학습 시작하기"), on_click=on_start, width=300)
@@ -587,3 +589,4 @@ def main(page: ft.Page):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=port)
+
