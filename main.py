@@ -1,681 +1,592 @@
-import os
 import flet as ft
-import sqlite3
-import random
 import time
-from datetime import datetime
+import datetime
+import webbrowser
+import os
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
+
+# [보안] .env 파일에서 클라우드 DB 접속 주소 로드
+load_dotenv()
+DB_URL = os.environ.get("SUPABASE_DB_URL")
+
+if not DB_URL:
+    print("[경고] .env 파일에 SUPABASE_DB_URL이 설정되지 않았습니다.")
 
 
-# ==========================================
-# 1. 서버(SQLite) DB 접근 영역 (문제, 토픽, 신고)
-# ==========================================
-
-def init_db():
-    # 학습 이력은 세션에 저장하므로, 여기서는 초기화가 필요한 서버 테이블만 관리합니다.
-    pass
+# [모듈 1] 클라우드 데이터베이스 연결 및 문제 조회 엔진
+def get_db_connection():
+    return psycopg2.connect(DB_URL, cursor_factory=psycopg2.extras.DictCursor)
 
 
-def get_random_question():
-    conn = sqlite3.connect('jima_study.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM questions ORDER BY RANDOM() LIMIT 1")
-    row = cursor.fetchone()
-    conn.close()
-    return row
+def get_random_question(topic_id=None):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
+        if topic_id:
+            cursor.execute("""
+                           SELECT q.*, t."Topic_Name"
+                           FROM questions q
+                                    LEFT JOIN topics t ON q."Topic_ID" = t."ID"
+                           WHERE q."Topic_ID" = %s
+                           ORDER BY RANDOM() LIMIT 1
+                           """, (topic_id,))
+        else:
+            cursor.execute("""
+                           SELECT q.*, t."Topic_Name"
+                           FROM questions q
+                                    LEFT JOIN topics t ON q."Topic_ID" = t."ID"
+                           ORDER BY RANDOM() LIMIT 1
+                           """)
 
-def get_same_topic_question(current_id, topic_id):
-    conn = sqlite3.connect('jima_study.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM questions WHERE Topic_ID = ? AND ID != ? ORDER BY RANDOM() LIMIT 1",
-                   (topic_id, current_id))
-    row = cursor.fetchone()
-    if not row:
-        cursor.execute("SELECT * FROM questions WHERE ID = ?", (current_id,))
         row = cursor.fetchone()
-    conn.close()
-    return row
+        conn.close()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"[시스템] 랜덤 문제 조회 실패: {e}")
+        return None
 
 
-def get_random_question_by_topic(topic_id):
-    conn = sqlite3.connect('jima_study.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM questions WHERE Topic_ID = ? ORDER BY RANDOM() LIMIT 1", (topic_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row
+def get_review_question(nickname):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+                       SELECT q.*, t."Topic_Name"
+                       FROM questions q
+                                LEFT JOIN topics t ON q."Topic_ID" = t."ID"
+                                JOIN solve_history h ON q."ID" = h.question_id
+                       WHERE h.session_id = %s
+                         AND h.is_correct = 0
+                       ORDER BY RANDOM() LIMIT 1
+                       """, (nickname,))
+
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"[시스템] 복습 문제 조회 실패: {e}")
+        return None
 
 
-def save_report(question_id, user_comment):
-    conn = sqlite3.connect('jima_study.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS reports (id INTEGER PRIMARY KEY AUTOINCREMENT, question_id INTEGER, comment TEXT, reported_at DATETIME DEFAULT (DATETIME('now', 'localtime')))")
-    cursor.execute("INSERT INTO reports (question_id, comment) VALUES (?, ?)", (question_id, user_comment))
-    conn.commit()
-    conn.close()
+# [모듈 2] 학습 이력 클라우드 DB 저장 및 제어 엔진
+def save_solve_history(nickname, q_id, user_answer, is_correct, elapsed_time):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        time_taken_int = int(elapsed_time)
+        cursor.execute(
+            "INSERT INTO solve_history (question_id, user_answer, is_correct, solved_at, time_taken, session_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (q_id, user_answer, is_correct, now, time_taken_int, nickname)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[시스템] 학습 이력 저장 실패: {e}")
 
 
-# ==========================================
-# 2. 클라이언트 세션(page 인스턴스) 접근 영역 (학습 이력)
-# ==========================================
-
-def get_history(page: ft.Page):
-    # page 객체에 solve_history 속성이 없으면 빈 리스트로 초기화하여 반환합니다.
-    if not hasattr(page, "solve_history"):
-        page.solve_history = []
-    return page.solve_history
-
-
-def save_history(page: ft.Page, q_id, user_ans, is_correct, duration):
-    history = get_history(page)
-    history.append({
-        "question_id": q_id,
-        "user_answer": user_ans,
-        "is_correct": 1 if is_correct else 0,
-        "solved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "time_taken": duration
-    })
+def auto_clean_history(nickname, days=30):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            f"DELETE FROM solve_history WHERE session_id = %s AND solved_at < NOW() - INTERVAL '{days} days'",
+            (nickname,)
+        )
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        if deleted_count > 0:
+            print(f"[시스템] {days}일 경과 데이터 자동 삭제 완료 ({deleted_count}건)")
+    except Exception as e:
+        print(f"[시스템] 자동 초기화 실패: {e}")
 
 
-def get_topic_accuracy(page: ft.Page, topic_id):
-    history = get_history(page)
-
-    conn = sqlite3.connect('jima_study.db')
-    conn.row_factory = sqlite3.Row
-    q_rows = conn.execute("SELECT ID FROM questions WHERE Topic_ID = ?", (topic_id,)).fetchall()
-    conn.close()
-
-    target_q_ids = {row['ID'] for row in q_rows}
-    total_attempts = 0
-    correct_attempts = 0
-    now = datetime.now()
-
-    for r in history:
-        if r['question_id'] in target_q_ids:
-            solved_dt = datetime.strptime(r['solved_at'], "%Y-%m-%d %H:%M:%S")
-            if (now - solved_dt).days <= 7:
-                total_attempts += 1
-                correct_attempts += r['is_correct']
-
-    if total_attempts == 0:
-        return f"[ 처음 풀어보는 유형 🌱 ]"
-
-    accuracy = int((correct_attempts / total_attempts) * 100)
-    return f"[ 유형별 정답률(7일 간): {accuracy}% ]"
+def clear_all_history(nickname):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM solve_history WHERE session_id = %s", (nickname,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[시스템] 수동 초기화 실패: {e}")
 
 
-def get_overall_stats(page: ft.Page):
-    history = get_history(page)
-    total_solved = len(history)
-    total_correct = sum(r['is_correct'] for r in history)
-    total_time = sum(r['time_taken'] for r in history)
-
-    accuracy = int((total_correct / total_solved) * 100) if total_solved > 0 else 0
-    return total_solved, accuracy, total_time
-
-
-def get_topic_stats(page: ft.Page):
-    history = get_history(page)
-
-    conn = sqlite3.connect('jima_study.db')
-    conn.row_factory = sqlite3.Row
-    topics = conn.execute("SELECT ID, Topic_Name FROM topics").fetchall()
-    questions = conn.execute("SELECT ID, Topic_ID FROM questions").fetchall()
-    conn.close()
-
-    q_to_t = {q['ID']: q['Topic_ID'] for q in questions}
-    t_names = {t['ID']: t['Topic_Name'] for t in topics}
-
-    stats_dict = {}
-    for r in history:
-        q_id = r['question_id']
-        t_id = q_to_t.get(q_id)
-        if not t_id: continue
-
-        if t_id not in stats_dict:
-            stats_dict[t_id] = {"total": 0, "correct": 0}
-
-        stats_dict[t_id]["total"] += 1
-        stats_dict[t_id]["correct"] += r["is_correct"]
-
-    result = []
-    for t_id, data in stats_dict.items():
-        acc = int((data["correct"] / data["total"]) * 100) if data["total"] > 0 else 0
-        result.append({
-            "topic_id": t_id,
-            "topic_name": t_names.get(t_id, "알 수 없는 유형"),
-            "total_solved": data["total"],
-            "accuracy": acc
-        })
-
-    result.sort(key=lambda x: x['accuracy'])
-    return result
+# [모듈 3] 문제 신고 클라우드 DB 저장 엔진
+def save_report(q_id, nickname, reason):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            "INSERT INTO reports (question_id, session_id, comment, reported_at) VALUES (%s, %s, %s, %s)",
+            (q_id, nickname, reason, now)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[시스템] 문제 신고 저장 실패: {e}")
 
 
-def get_review_question(page: ft.Page):
-    history = get_history(page)
-    if not history: return None
+# [모듈 4] 토픽별 학습 통계 조회 엔진
+def get_topic_statistics(nickname):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+                       SELECT q."Topic_ID",
+                              t."Topic_Name",
+                              COUNT(*)          as total_attempts,
+                              SUM(h.is_correct) as correct_attempts
+                       FROM solve_history h
+                                JOIN questions q ON h.question_id = q."ID"
+                                LEFT JOIN topics t ON q."Topic_ID" = t."ID"
+                       WHERE h.session_id = %s
+                       GROUP BY q."Topic_ID", t."Topic_Name"
+                       ORDER BY (CAST(SUM(h.is_correct) AS FLOAT) / COUNT(*)) ASC, COUNT(*) DESC
+                       """, (nickname,))
+        rows = cursor.fetchall()
+        conn.close()
 
-    latest_history = {}
-    for r in history:
-        q_id = r['question_id']
-        r_time = datetime.strptime(r['solved_at'], "%Y-%m-%d %H:%M:%S")
-        if q_id not in latest_history or r_time > latest_history[q_id]['dt']:
-            latest_history[q_id] = {'data': r, 'dt': r_time}
-
-    now = datetime.now()
-    scored_questions = []
-
-    for q_id, val in latest_history.items():
-        r = val['data']
-        dt = val['dt']
-        score = 0
-
-        if r['is_correct'] == 0: score += 50
-
-        days_passed = (now - dt).days
-        if days_passed >= 30:
-            score += 50
-        elif days_passed >= 14:
-            score += 40
-        elif days_passed >= 7:
-            score += 30
-        elif days_passed >= 3:
-            score += 20
-        elif days_passed >= 1:
-            score += 10
-
-        if r['time_taken'] >= 30: score += 10
-
-        scored_questions.append((score, q_id))
-
-    if not scored_questions: return None
-
-    scored_questions.sort(key=lambda x: (x[0], random.random()), reverse=True)
-    target_q_id = scored_questions[0][1]
-
-    conn = sqlite3.connect('jima_study.db')
-    conn.row_factory = sqlite3.Row
-    q_data = conn.execute("SELECT * FROM questions WHERE ID = ?", (target_q_id,)).fetchone()
-    conn.close()
-    return q_data
+        stats = []
+        for row in rows:
+            topic_id = row["Topic_ID"] if row["Topic_ID"] else 0
+            topic_name = row["Topic_Name"] if row["Topic_Name"] else "미분류"
+            total = row["total_attempts"]
+            correct = row["correct_attempts"]
+            accuracy = round((correct / total) * 100, 1) if total > 0 else 0
+            stats.append({
+                "topic_id": topic_id,
+                "topic_name": topic_name,
+                "total": total,
+                "correct": correct,
+                "accuracy": accuracy
+            })
+        return stats
+    except Exception as e:
+        print(f"[시스템] 통계 조회 실패: {e}")
+        return []
 
 
-def clear_history(page: ft.Page):
-    # 페이지 객체 내의 리스트를 비워 완벽하게 초기화
-    page.solve_history = []
-
-
-# ==========================================
-# 3. Flet UI 및 메인 로직
-# ==========================================
-
-async def main(page: ft.Page):
-    page.title = "정보처리기사 지마쌤 All-In-One"
+# [모듈 5] 메인 컨트롤러 (웹 최적화)
+def main(page: ft.Page):
+    page.title = "올인원 필수암기 문제풀이"
     page.window.width = 450
     page.window.height = 800
+    page.theme_mode = ft.ThemeMode.LIGHT
 
-    # ColorScheme을 활용한 시맨틱 테마 전역 설정
-    page.theme = ft.Theme(
-        color_scheme=ft.ColorScheme(
-            primary=ft.Colors.BLUE,
-            on_primary=ft.Colors.ON_PRIMARY,
-            error=ft.Colors.ERROR,
-            on_error=ft.Colors.ON_ERROR,
-            on_surface_variant=ft.Colors.ON_SURFACE_VARIANT,
-            outline_variant=ft.Colors.OUTLINE_VARIANT,
-            tertiary=ft.Colors.TEAL,
-            on_tertiary=ft.Colors.ON_TERTIARY
-        )
-    )
+    def navigate(route_name):
+        page.route = route_name
+        page.views.clear()
 
-    async def nav_to_random(e):
-        await page.push_route("/random")
+        # --- 1. 진입 화면 (로그인) ---
+        if route_name == "/":
+            nickname_input = ft.TextField(label="닉네임 입력", width=300, hint_text="이름을 입력하세요.")
 
-    async def nav_to_review(e):
-        await page.push_route("/review")
+            def on_start(e):
+                if nickname_input.value:
+                    nick = nickname_input.value
 
-    async def nav_to_history(e):
-        await page.push_route("/history")
+                    # 브라우저 탭 단위의 독립 세션에만 닉네임 저장 (충돌 0%)
+                    page.session.store.set("user_nickname", nick)
 
-    async def nav_to_cafe(e):
-        await page.launch_url("https://cafe.naver.com/yjbooks")
-
-    async def nav_to_home(e):
-        await page.push_route("/")
-
-    # --- 홈 화면 뷰 ---
-    def create_home_view():
-        return ft.View(
-            route="/",
-            appbar=ft.AppBar(title=ft.Text("지마쌤 All-In-One"), bgcolor=ft.Colors.SURFACE_BRIGHT),
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            vertical_alignment=ft.MainAxisAlignment.CENTER,
-            controls=[
-                ft.Column([
-                    ft.Button("🎲 랜덤 문제 풀이", width=300, on_click=nav_to_random),
-                    ft.Button("🔄 복습 문제 풀이", width=300, on_click=nav_to_review),
-                    ft.Button("📊 학습이력 관리", width=300, on_click=nav_to_history),
-                    ft.Button("☕ 스터디 카페 가기", width=300, on_click=nav_to_cafe),
-                ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    expand=True)
-            ]
-        )
-
-    # --- 랜덤 문제 풀이 뷰 ---
-    def create_random_quiz_view(q_data=None):
-        if q_data is None:
-            q_data = get_random_question()
-        start_time = time.time()
-
-        if not q_data:
-            return ft.View(
-                route="/random",
-                appbar=ft.AppBar(title=ft.Text("랜덤 문제 풀이"),
-                                 leading=ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=nav_to_home)),
-                controls=[ft.Text("데이터베이스에 문제가 없습니다. DB를 확인해 주세요.")]
-            )
-
-        q_id = q_data['ID']
-        topic_id = q_data['Topic_ID']
-        question_text = q_data['Question']
-        options = [q_data['Opt1'], q_data['Opt2'], q_data['Opt3'], q_data['Opt4']]
-        answer = q_data['Ans']
-        explanation = q_data['Explanation']
-
-        accuracy_str = get_topic_accuracy(page, topic_id)
-        accuracy_display = ft.Text(accuracy_str, color=ft.Colors.PRIMARY, weight=ft.FontWeight.BOLD)
-
-        result_text = ft.Text(size=18, weight=ft.FontWeight.BOLD)
-        explanation_text = ft.Text(visible=False, color=ft.Colors.ON_SURFACE_VARIANT)
-
-        async def next_question_click(e):
-            page.views.pop()
-            page.views.append(create_random_quiz_view())
-            page.update()
-
-        async def same_topic_click(e):
-            same_q = get_same_topic_question(q_id, topic_id)
-            page.views.pop()
-            page.views.append(create_random_quiz_view(q_data=same_q))
-            page.update()
-
-        action_buttons = ft.Column(
-            controls=[
-                ft.Row(
-                    controls=[
-                        ft.Button("다음 문제 ➡️", on_click=next_question_click),
-                        ft.Button("같은 유형 더 풀기 🔄", on_click=same_topic_click)
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER
-                ),
-                ft.Button("🏠 첫 화면으로 돌아가기", on_click=nav_to_home, width=350)
-            ],
-            visible=False,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER
-        )
-        opt_buttons = []
-
-        async def option_click(e):
-            selected_idx = e.control.data
-            duration = int(time.time() - start_time)
-            is_correct = (selected_idx == answer)
-
-            save_history(page, q_id, selected_idx, is_correct, duration)
-
-            for btn in opt_buttons:
-                btn.disabled = True
-                if btn.data == answer:
-                    btn.bgcolor = ft.Colors.TERTIARY
-                    btn.color = ft.Colors.ON_TERTIARY
-                elif btn.data == selected_idx and not is_correct:
-                    btn.bgcolor = ft.Colors.ERROR
-                    btn.color = ft.Colors.ON_ERROR
-
-            result_text.value = "🎉 정답입니다!" if is_correct else "💦 오답입니다."
-            result_text.color = ft.Colors.TERTIARY if is_correct else ft.Colors.ERROR
-            explanation_text.value = f"💡 해설: {explanation}" if explanation else "💡 해설: 등록된 해설이 없습니다."
-
-            explanation_text.visible = True
-            action_buttons.visible = True
-            page.update()
-
-        report_tf = ft.TextField(label="오류 내용이나 의견을 적어주세요.", multiline=True, max_lines=3)
-
-        def submit_report(e):
-            if report_tf.value:
-                save_report(q_id, report_tf.value)
-                report_tf.value = ""
-                page.pop_dialog()
-                page.show_dialog(ft.SnackBar(ft.Text("신고가 성공적으로 접수되었습니다. 감사합니다!")))
-                page.update()
-
-        def close_dialog(e):
-            page.pop_dialog()
-            page.update()
-
-        report_dialog = ft.AlertDialog(
-            title=ft.Text("문제 신고하기"),
-            content=report_tf,
-            actions=[
-                ft.Button("취소", on_click=close_dialog),
-                ft.Button("제출", on_click=submit_report, style=ft.ButtonStyle(color=ft.Colors.PRIMARY)),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-
-        def open_report_dialog(e):
-            page.show_dialog(report_dialog)
-            page.update()
-
-        for i, opt_text in enumerate(options, start=1):
-            btn = ft.Button(
-                f"{i}. {opt_text}",
-                data=i,
-                width=350,
-                style=ft.ButtonStyle(alignment=ft.Alignment.CENTER_LEFT),
-                on_click=option_click
-            )
-            opt_buttons.append(btn)
-
-        return ft.View(
-            route="/random",
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            appbar=ft.AppBar(
-                title=ft.Text("랜덤 문제 풀이"),
-                leading=ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=nav_to_home),
-                actions=[
-                    ft.IconButton(icon=ft.Icons.REPORT_PROBLEM_OUTLINED, on_click=open_report_dialog,
-                                  tooltip="문제 오류 신고")
-                ]
-            ),
-            controls=[
-                ft.Container(height=30),
-                accuracy_display,
-                ft.Text(f"Q. {question_text}", size=20, weight=ft.FontWeight.BOLD, width=350),
-                ft.Container(height=20),
-                *opt_buttons,
-                ft.Container(height=20),
-                result_text,
-                explanation_text,
-                ft.Container(height=20),
-                action_buttons
-            ]
-        )
-
-    # --- 복습 문제 풀이 뷰 ---
-    def create_review_quiz_view(q_data=None):
-        if q_data is None:
-            q_data = get_review_question(page)
-
-        start_time = time.time()
-
-        if not q_data:
-            return ft.View(
-                route="/review",
-                appbar=ft.AppBar(title=ft.Text("복습 문제 풀이"),
-                                 leading=ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=nav_to_home)),
-                controls=[
-                    ft.Container(height=50),
-                    ft.Text("아직 복습할 문제가 없습니다. 먼저 랜덤 문제를 풀어주세요!", weight=ft.FontWeight.BOLD)
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER
-            )
-
-        q_id = q_data['ID']
-        topic_id = q_data['Topic_ID']
-        question_text = q_data['Question']
-        options = [q_data['Opt1'], q_data['Opt2'], q_data['Opt3'], q_data['Opt4']]
-        answer = q_data['Ans']
-        explanation = q_data['Explanation']
-
-        accuracy_str = get_topic_accuracy(page, topic_id)
-        accuracy_display = ft.Text(accuracy_str, color=ft.Colors.PRIMARY, weight=ft.FontWeight.BOLD)
-
-        review_banner = ft.Container(
-            content=ft.Text("🧠 망각 곡선 기반 복습 추천 문제", color=ft.Colors.ON_TERTIARY, weight=ft.FontWeight.BOLD),
-            bgcolor=ft.Colors.TERTIARY,
-            padding=5,
-            border_radius=3
-        )
-
-        result_text = ft.Text(size=18, weight=ft.FontWeight.BOLD)
-        explanation_text = ft.Text(visible=False, color=ft.Colors.ON_SURFACE_VARIANT)
-
-        async def next_review_click(e):
-            page.views.pop()
-            page.views.append(create_review_quiz_view())
-            page.update()
-
-        action_buttons = ft.Column(
-            controls=[
-                ft.Button("다음 복습 문제 ➡️", on_click=next_review_click),
-                ft.Button("🏠 첫 화면으로 돌아가기", on_click=nav_to_home, width=350)
-            ],
-            visible=False,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER
-        )
-        opt_buttons = []
-
-        async def option_click(e):
-            selected_idx = e.control.data
-            duration = int(time.time() - start_time)
-            is_correct = (selected_idx == answer)
-
-            save_history(page, q_id, selected_idx, is_correct, duration)
-
-            for btn in opt_buttons:
-                btn.disabled = True
-                if btn.data == answer:
-                    btn.bgcolor = ft.Colors.TERTIARY
-                    btn.color = ft.Colors.ON_TERTIARY
-                elif btn.data == selected_idx and not is_correct:
-                    btn.bgcolor = ft.Colors.ERROR
-                    btn.color = ft.Colors.ON_ERROR
-
-            result_text.value = "🎉 완벽히 기억하셨네요!" if is_correct else "💦 아쉽게도 잊어버리셨군요. 다시 외워봅시다!"
-            result_text.color = ft.Colors.TERTIARY if is_correct else ft.Colors.ERROR
-            explanation_text.value = f"💡 해설: {explanation}" if explanation else "💡 해설: 등록된 해설이 없습니다."
-
-            explanation_text.visible = True
-            action_buttons.visible = True
-            page.update()
-
-        for i, opt_text in enumerate(options, start=1):
-            btn = ft.Button(
-                f"{i}. {opt_text}",
-                data=i,
-                width=350,
-                style=ft.ButtonStyle(alignment=ft.Alignment.CENTER_LEFT),
-                on_click=option_click
-            )
-            opt_buttons.append(btn)
-
-        return ft.View(
-            route="/review",
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            appbar=ft.AppBar(
-                title=ft.Text("복습 문제 풀이"),
-                leading=ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=nav_to_home)
-            ),
-            controls=[
-                ft.Container(height=10),
-                review_banner,
-                ft.Container(height=10),
-                accuracy_display,
-                ft.Text(f"Q. {question_text}", size=20, weight=ft.FontWeight.BOLD, width=350),
-                ft.Container(height=20),
-                *opt_buttons,
-                ft.Container(height=20),
-                result_text,
-                explanation_text,
-                ft.Container(height=20),
-                action_buttons
-            ]
-        )
-
-    # --- 학습이력 관리 뷰 ---
-    def create_history_view():
-        total_solved, accuracy, total_time = get_overall_stats(page)
-        minutes = total_time // 60
-        seconds = total_time % 60
-
-        summary_text = ft.Text(
-            f"📊 전체 푼 문제: {total_solved}개 | 누적 정답률: {accuracy}% | 총 학습 시간: {minutes}분 {seconds}초",
-            weight=ft.FontWeight.BOLD,
-            size=16
-        )
-
-        topic_stats = get_topic_stats(page)
-        rows = []
-
-        for stat in topic_stats:
-            async def on_topic_click(e, tid=stat['topic_id']):
-                q_data = get_random_question_by_topic(tid)
-                if q_data:
-                    page.views.pop()
-                    page.views.append(create_random_quiz_view(q_data=q_data))
-                    page.update()
+                    auto_clean_history(nick, days=30)
+                    navigate("/home")
                 else:
-                    page.show_dialog(ft.SnackBar(ft.Text("해당 유형에 아직 등록된 문제가 없습니다.")))
+                    snack = ft.SnackBar(content=ft.Text("닉네임을 입력하세요."))
+                    page.overlay.append(snack)
+                    snack.open = True
                     page.update()
 
-            rows.append(
-                ft.DataRow(
-                    cells=[
-                        ft.DataCell(
-                            ft.Container(
-                                width=250,
-                                content=ft.Button(
-                                    stat['topic_name'],
-                                    tooltip=stat['topic_name'],
-                                    style=ft.ButtonStyle(
-                                        alignment=ft.Alignment.CENTER_LEFT,
-                                        padding=5,
-                                        shape=ft.RoundedRectangleBorder(radius=5)
-                                    ),
-                                    on_click=on_topic_click
-                                )
-                            )
+            page.views.append(ft.View(
+                route="/",
+                controls=[
+                    ft.Icon(ft.Icons.MENU_BOOK, size=50, color="#2196F3"),
+                    ft.Text("올인원 필수암기", size=30, weight=ft.FontWeight.BOLD),
+                    ft.Container(height=20),
+                    nickname_input,
+                    ft.Text("※ 클라우드 서버 연동 완료. 데이터가 영구 보존됩니다.", size=12, color="#1976D2"),
+                    ft.Container(height=20),
+                    ft.Button(content=ft.Text("학습 시작하기"), on_click=on_start, width=300)
+                ],
+                vertical_alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER
+            ))
+
+        # --- 2. 메인 홈 화면 ---
+        elif route_name == "/home":
+            nickname = page.session.store.get("user_nickname") or "학습자"
+            page.views.append(ft.View(
+                route="/home",
+                controls=[
+                    ft.Icon(ft.Icons.CLOUD_DONE, size=40, color="#4CAF50"),
+                    ft.Container(height=10),
+                    ft.Text(f"반갑습니다, {nickname}님! 👋", size=22, weight=ft.FontWeight.BOLD),
+                    ft.Container(height=30),
+                    ft.Button(content=ft.Text("🎲 전체 랜덤 문제 풀기"), on_click=lambda _: navigate("/random"), width=300),
+                    ft.Button(content=ft.Text("🔄 스마트 오답 복습"), on_click=lambda _: navigate("/review"), width=300),
+                    ft.Button(content=ft.Text("📊 취약점 진단 대시보드"), on_click=lambda _: navigate("/history"), width=300),
+                    ft.Button(content=ft.Text("☕ 스터디 카페 가기"),
+                              on_click=lambda _: webbrowser.open("https://cafe.naver.com/yjbooks"), width=300),
+                ],
+                vertical_alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER
+            ))
+
+        # --- 3. 랜덤 문제 풀기 화면 ---
+        elif route_name == "/random":
+            nickname = page.session.store.get("user_nickname") or "학습자"
+            target_topic_id = page.session.store.get("target_topic_id")
+
+            q = get_random_question(target_topic_id)
+            page.session.store.set("target_topic_id", None)
+
+            if q:
+                topic_name = q.get("Topic_Name", "미분류")
+                appbar_title = f"집중 복습: {topic_name}" if target_topic_id else "랜덤 문제 풀기"
+            else:
+                appbar_title = "랜덤 문제 풀기"
+
+            appbar = ft.AppBar(
+                title=ft.Text(appbar_title, size=16, weight=ft.FontWeight.BOLD),
+                actions=[ft.IconButton(icon=ft.Icons.HOME, on_click=lambda _: navigate("/home"), tooltip="홈으로 이동")],
+                bgcolor="#F2F2F2"
+            )
+
+            if not q:
+                page.views.append(ft.View(
+                    route="/random",
+                    appbar=appbar,
+                    controls=[
+                        ft.Icon(ft.Icons.WARNING, size=50, color="#F44336"),
+                        ft.Text("해당 조건의 문제가 DB에 없습니다.", color="#F44336", weight=ft.FontWeight.BOLD)
+                    ],
+                    vertical_alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ))
+            else:
+                question_start_time = time.time()
+                question_id = q.get("ID", 0)
+                topic_id = q.get("Topic_ID", 0)
+                explanation = q.get("Explanation", "등록된 해설이 없습니다.")
+
+                def check_answer(e):
+                    elapsed_time = round(time.time() - question_start_time, 2)
+                    selected = e.control.data
+                    correct = q["Ans"]
+                    is_correct = 1 if selected == int(correct) else 0
+
+                    save_solve_history(nickname, question_id, selected, is_correct, elapsed_time)
+
+                    title_text = "🎉 정답입니다!" if is_correct else f"❌ 오답입니다. (정답: {correct}번)"
+                    title_color = "#4CAF50" if is_correct else "#F44336"
+
+                    def go_next(e):
+                        result_dialog.open = False
+                        page.update()
+                        navigate("/random")
+
+                    def go_similar(e):
+                        result_dialog.open = False
+                        page.session.store.set("target_topic_id", topic_id)
+                        page.update()
+                        navigate("/random")
+
+                    result_dialog = ft.AlertDialog(
+                        title=ft.Text(title_text, color=title_color, weight=ft.FontWeight.BOLD),
+                        content=ft.Container(
+                            content=ft.Column([
+                                ft.Text(f"소요 시간: {elapsed_time}초", size=12, color="#757575"),
+                                ft.Container(height=10),
+                                ft.Text("📖 해설", weight=ft.FontWeight.BOLD),
+                                ft.Text(explanation, size=14)
+                            ], scroll=ft.ScrollMode.AUTO, tight=True),
+                            height=250, width=350
                         ),
-                        ft.DataCell(ft.Text(str(stat['total_solved']))),
-                        ft.DataCell(ft.Text(f"{stat['accuracy']}%")),
+                        actions=[
+                            ft.Button(content=ft.Text("같은 유형 계속 풀기"), on_click=go_similar),
+                            ft.Button(content=ft.Text("다음 문제"), on_click=go_next)
+                        ],
+                        actions_alignment=ft.MainAxisAlignment.END
+                    )
+                    page.overlay.append(result_dialog)
+                    result_dialog.open = True
+                    page.update()
+
+                def open_report_dialog(e):
+                    reason_input = ft.TextField(label="신고 사유", multiline=True, width=300)
+
+                    def submit_report(e):
+                        if reason_input.value:
+                            save_report(question_id, nickname, reason_input.value)
+                            report_dialog.open = False
+                            snack = ft.SnackBar(content=ft.Text("신고가 정상 접수되었습니다."), bgcolor="#4CAF50")
+                            page.overlay.append(snack)
+                            snack.open = True
+                            page.update()
+
+                    def close_report(e):
+                        report_dialog.open = False
+                        page.update()
+
+                    report_dialog = ft.AlertDialog(
+                        title=ft.Text("🚨 문제 오류 신고", weight=ft.FontWeight.BOLD),
+                        content=ft.Column([
+                            ft.Text("오탈자, 정답 오류 등을 기재해 주세요.", size=12),
+                            reason_input
+                        ], tight=True),
+                        actions=[
+                            ft.Button(content=ft.Text("취소"), on_click=close_report),
+                            ft.Button(content=ft.Text("전송"), on_click=submit_report)
+                        ]
+                    )
+                    page.overlay.append(report_dialog)
+                    report_dialog.open = True
+                    page.update()
+
+                page.views.append(ft.View(
+                    route="/random",
+                    appbar=appbar,
+                    controls=[
+                        ft.Row([
+                            ft.Text(f"현재 학습자: {nickname}", size=14, color="#1976D2", weight=ft.FontWeight.BOLD),
+                            ft.IconButton(icon=ft.Icons.REPORT_PROBLEM, icon_color="#F44336",
+                                          on_click=open_report_dialog, tooltip="문제 신고")
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=350),
+
+                        ft.Container(height=10),
+                        ft.Text(f"[{topic_name}]", size=12, color="#757575", weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Q. {q['Question']}", size=18, weight=ft.FontWeight.BOLD),
+                        ft.Container(height=20),
+                        ft.Button(content=ft.Text(f"1. {q['Opt1']}"), data=1, on_click=check_answer, width=350),
+                        ft.Container(height=5),
+                        ft.Button(content=ft.Text(f"2. {q['Opt2']}"), data=2, on_click=check_answer, width=350),
+                        ft.Container(height=5),
+                        ft.Button(content=ft.Text(f"3. {q['Opt3']}"), data=3, on_click=check_answer, width=350),
+                        ft.Container(height=5),
+                        ft.Button(content=ft.Text(f"4. {q['Opt4']}"), data=4, on_click=check_answer, width=350)
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ))
+
+        # --- 4. 오답 복습 문제 풀기 화면 ---
+        elif route_name == "/review":
+            nickname = page.session.store.get("user_nickname") or "학습자"
+            q = get_review_question(nickname)
+
+            appbar = ft.AppBar(
+                title=ft.Text("스마트 오답 복습", size=16, weight=ft.FontWeight.BOLD),
+                actions=[ft.IconButton(icon=ft.Icons.HOME, on_click=lambda _: navigate("/home"), tooltip="홈으로 이동")],
+                bgcolor="#FFEBEE"
+            )
+
+            if not q:
+                page.views.append(ft.View(
+                    route="/review",
+                    appbar=appbar,
+                    controls=[
+                        ft.Icon(ft.Icons.STAR, size=60, color="#FFC107"),
+                        ft.Container(height=10),
+                        ft.Text("현재 복습할 오답이 없습니다!\n완벽합니다 🎉", text_align=ft.TextAlign.CENTER, size=18,
+                                weight=ft.FontWeight.BOLD),
+                        ft.Container(height=20),
+                        ft.Button(content=ft.Text("메인으로 돌아가기"), on_click=lambda _: navigate("/home"), width=300)
+                    ],
+                    vertical_alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ))
+            else:
+                question_start_time = time.time()
+                question_id = q.get("ID", 0)
+                topic_name = q.get("Topic_Name", "미분류")
+                explanation = q.get("Explanation", "등록된 해설이 없습니다.")
+
+                def check_answer(e):
+                    elapsed_time = round(time.time() - question_start_time, 2)
+                    selected = e.control.data
+                    correct = q["Ans"]
+                    is_correct = 1 if selected == int(correct) else 0
+
+                    save_solve_history(nickname, question_id, selected, is_correct, elapsed_time)
+
+                    title_text = "🎉 정답입니다!" if is_correct else f"❌ 또 틀렸습니다. (정답: {correct}번)"
+                    title_color = "#4CAF50" if is_correct else "#F44336"
+
+                    def go_next_review(e):
+                        result_dialog.open = False
+                        page.update()
+                        navigate("/review")
+
+                    result_dialog = ft.AlertDialog(
+                        title=ft.Text(title_text, color=title_color, weight=ft.FontWeight.BOLD),
+                        content=ft.Container(
+                            content=ft.Column([
+                                ft.Text(f"소요 시간: {elapsed_time}초", size=12, color="#757575"),
+                                ft.Container(height=10),
+                                ft.Text("📖 해설", weight=ft.FontWeight.BOLD),
+                                ft.Text(explanation, size=14)
+                            ], scroll=ft.ScrollMode.AUTO, tight=True),
+                            height=250, width=350
+                        ),
+                        actions=[
+                            ft.Button(content=ft.Text("다음 오답 풀기"), on_click=go_next_review)
+                        ],
+                        actions_alignment=ft.MainAxisAlignment.END
+                    )
+                    page.overlay.append(result_dialog)
+                    result_dialog.open = True
+                    page.update()
+
+                page.views.append(ft.View(
+                    route="/review",
+                    appbar=appbar,
+                    controls=[
+                        ft.Row([
+                            ft.Text(f"현재 학습자: {nickname}", size=14, color="#D32F2F", weight=ft.FontWeight.BOLD),
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, width=350),
+
+                        ft.Container(height=10),
+                        ft.Text(f"[{topic_name}]", size=12, color="#757575", weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Q. {q['Question']}", size=18, weight=ft.FontWeight.BOLD),
+                        ft.Container(height=20),
+                        ft.Button(content=ft.Text(f"1. {q['Opt1']}"), data=1, on_click=check_answer, width=350),
+                        ft.Container(height=5),
+                        ft.Button(content=ft.Text(f"2. {q['Opt2']}"), data=2, on_click=check_answer, width=350),
+                        ft.Container(height=5),
+                        ft.Button(content=ft.Text(f"3. {q['Opt3']}"), data=3, on_click=check_answer, width=350),
+                        ft.Container(height=5),
+                        ft.Button(content=ft.Text(f"4. {q['Opt4']}"), data=4, on_click=check_answer, width=350)
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ))
+
+        # --- 5. 취약점 진단 대시보드 화면 ---
+        elif route_name == "/history":
+            nickname = page.session.store.get("user_nickname") or "학습자"
+            stats_data = get_topic_statistics(nickname)
+
+            def open_reset_dialog(e):
+                def do_reset(e):
+                    clear_all_history(nickname)
+                    reset_dialog.open = False
+                    page.update()
+                    navigate("/history")
+                    snack = ft.SnackBar(content=ft.Text("학습 이력이 모두 초기화되었습니다."), bgcolor="#4CAF50")
+                    page.overlay.append(snack)
+                    snack.open = True
+                    page.update()
+
+                def cancel_reset(e):
+                    reset_dialog.open = False
+                    page.update()
+
+                reset_dialog = ft.AlertDialog(
+                    title=ft.Text("⚠️ 이력 전체 초기화", weight=ft.FontWeight.BOLD),
+                    content=ft.Text("정말로 모든 학습 이력을 삭제하시겠습니까?\n이 작업은 되돌릴 수 없으며, 통계가 모두 초기화됩니다."),
+                    actions=[
+                        ft.Button(content=ft.Text("취소"), on_click=cancel_reset),
+                        ft.Button(content=ft.Text("초기화", color="#F44336"), on_click=do_reset)
                     ]
                 )
+                page.overlay.append(reset_dialog)
+                reset_dialog.open = True
+                page.update()
+
+            appbar = ft.AppBar(
+                title=ft.Text("취약점 진단 대시보드", weight=ft.FontWeight.BOLD),
+                actions=[
+                    ft.IconButton(icon=ft.Icons.DELETE_FOREVER, icon_color="#F44336", on_click=open_reset_dialog,
+                                  tooltip="이력 초기화"),
+                    ft.IconButton(icon=ft.Icons.HOME, on_click=lambda _: navigate("/home"), tooltip="홈으로 이동")
+                ],
+                bgcolor="#F2F2F2"
             )
 
-        data_table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("유형명")),
-                ft.DataColumn(ft.Text("푼 횟수"), numeric=True),
-                ft.DataColumn(ft.Text("정답률"), numeric=True),
-            ],
-            rows=rows,
-            width=400,
-            column_spacing=15,
-            horizontal_margin=10
-        )
+            if not stats_data:
+                page.views.append(ft.View(
+                    route="/history",
+                    appbar=appbar,
+                    controls=[
+                        ft.Icon(ft.Icons.INFO, size=50, color="#1976D2"),
+                        ft.Text(f"{nickname}님의 학습 데이터가 부족합니다.", weight=ft.FontWeight.BOLD),
+                        ft.Container(height=20),
+                        ft.Button(content=ft.Text("데이터 쌓으러 가기"), on_click=lambda _: navigate("/random"), width=300)
+                    ],
+                    vertical_alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ))
+            else:
+                total_all = sum(item["total"] for item in stats_data)
+                correct_all = sum(item["correct"] for item in stats_data)
+                accuracy_all = round((correct_all / total_all) * 100, 1) if total_all > 0 else 0
 
-        # 공통 테두리 객체 정의
-        outline_border = ft.BorderSide(1, ft.Colors.OUTLINE_VARIANT)
+                summary_card = ft.Container(
+                    content=ft.Row([
+                        ft.Text(f"누적 {total_all}문제", weight=ft.FontWeight.BOLD),
+                        ft.Text(f"종합 정답률 {accuracy_all}%", color="#2196F3", weight=ft.FontWeight.BOLD),
+                    ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
+                    padding=15, bgcolor="#E3F2FD", border_radius=10, width=400
+                )
 
-        table_container = ft.Container(
-            content=ft.Column([data_table], scroll=ft.ScrollMode.AUTO),
-            height=400,
-            border=ft.Border(
-                top=outline_border,
-                right=outline_border,
-                bottom=outline_border,
-                left=outline_border
-            ),
-            border_radius=5,
-            padding=10
-        )
+                topic_list = ft.ListView(expand=True, spacing=10, width=400)
 
-        def confirm_clear(e):
-            clear_history(page)
-            page.pop_dialog()
-            page.show_dialog(ft.SnackBar(ft.Text("학습 이력이 성공적으로 초기화되었습니다.")))
-            page.views.pop()
-            page.views.append(create_history_view())
-            page.update()
+                def start_topic_review(e, target_topic_id):
+                    page.session.store.set("target_topic_id", target_topic_id)
+                    navigate("/random")
 
-        def cancel_clear(e):
-            page.pop_dialog()
-            page.update()
+                for item in stats_data:
+                    acc = item["accuracy"]
+                    is_weak = acc < 60
+                    card_bgcolor = "#FFEBEE" if is_weak else "#FFFFFF"
+                    acc_color = "#D32F2F" if is_weak else "#388E3C"
 
-        clear_dialog = ft.AlertDialog(
-            title=ft.Text("학습이력 초기화"),
-            content=ft.Text("정말로 모든 학습 기록을 지우시겠습니까?\n이 작업은 되돌릴 수 없습니다."),
-            actions=[
-                ft.Button("취소", on_click=cancel_clear),
-                ft.Button("초기화", style=ft.ButtonStyle(color=ft.Colors.ERROR), on_click=confirm_clear),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
+                    record_card = ft.Container(
+                        content=ft.Column([
+                            ft.Text(f"[{item['topic_name']}]", size=16, weight=ft.FontWeight.BOLD),
+                            ft.Text(f"정답률 {acc}%", color=acc_color, weight=ft.FontWeight.BOLD, size=15),
+                            ft.Container(height=5),
+                            ft.Row([
+                                ft.Text(f"풀이: {item['total']}회 / 정답: {item['correct']}회", size=12, color="#616161"),
+                                ft.Button(
+                                    content=ft.Text("집중 복습", size=12, color="#FFFFFF"),
+                                    bgcolor="#1976D2",
+                                    on_click=lambda e, t=item['topic_id']: start_topic_review(e, t)
+                                )
+                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
+                        ]),
+                        padding=15,
+                        bgcolor=card_bgcolor,
+                        border=ft.Border.all(1, "#E0E0E0"),
+                        border_radius=8
+                    )
+                    topic_list.controls.append(record_card)
 
-        def open_clear_dialog(e):
-            page.show_dialog(clear_dialog)
-            page.update()
-
-        clear_btn = ft.Button(
-            "⚠️ 학습이력 초기화",
-            style=ft.ButtonStyle(color=ft.Colors.ERROR),
-            on_click=open_clear_dialog
-        )
-
-        return ft.View(
-            route="/history",
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            appbar=ft.AppBar(
-                title=ft.Text("학습이력 관리"),
-                bgcolor=ft.Colors.SURFACE_BRIGHT,
-                leading=ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=nav_to_home)
-            ),
-            controls=[
-                ft.Container(height=20),
-                summary_text,
-                ft.Container(height=10),
-                table_container,
-                ft.Container(height=20),
-                clear_btn
-            ]
-        )
-
-    # --- 라우팅 컨트롤 로직 ---
-    async def route_change(e):
-        page.views.clear()
-        page.views.append(create_home_view())
-
-        if page.route == "/random":
-            page.views.append(create_random_quiz_view())
-        elif page.route == "/review":
-            page.views.append(create_review_quiz_view())
-        elif page.route == "/history":
-            page.views.append(create_history_view())
+                page.views.append(ft.View(
+                    route="/history",
+                    appbar=appbar,
+                    controls=[
+                        ft.Text("정답률이 낮은 취약 토픽이 상단에 표시됩니다.", size=12, color="#F44336", weight=ft.FontWeight.BOLD),
+                        ft.Container(height=10),
+                        summary_card,
+                        ft.Container(height=10),
+                        topic_list
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER
+                ))
 
         page.update()
 
-    async def view_pop(e):
-        page.views.pop()
-        if page.views:
-            top_view = page.views[-1]
-            await page.push_route(top_view.route)
+    def view_pop(e):
+        navigate("/home")
 
-    page.on_route_change = route_change
     page.on_view_pop = view_pop
-
-    # 초기 화면 렌더링
-    await route_change(None)
+    navigate("/")
 
 
 if __name__ == "__main__":
-    # Render 서버가 부여하는 PORT 환경변수를 가져오되, 로컬 테스트 시에는 8550을 사용합니다.
-    port = int(os.environ.get("PORT", 8550))
-    # host="0.0.0.0" 옵션은 외부망 접속을 허용하는 필수 웹 서버 설정입니다.
-
-    ft.run(main, view=ft.AppView.WEB_BROWSER, port=port, host="0.0.0.0")
+    ft.run(main)
