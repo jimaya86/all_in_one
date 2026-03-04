@@ -589,4 +589,6 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.run(main)
+    # Render 환경의 PORT 변수를 가져와 웹 서버로 직접 실행 (기본값 8080)
+    port = int(os.environ.get("PORT", 8080))
+    ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=port)
