@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="/">
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+
+  <title>올인원 필수암기 - 정보처리 지마쌤</title>
+  <meta name="description" content="가장 효율적인 기출 암기 솔루션! 지금 바로 퀴즈를 풀어보세요.">
+  <meta property="og:title" content="올인원 필수암기 - 정보처리 지마쌤">
+  <meta property="og:description" content="가장 효율적인 기출 암기 솔루션! 지금 바로 퀴즈를 풀어보세요.">
+  <meta property="og:image" content="https://raw.githubusercontent.com/지마님계정/all-in-one-study/main/assets/logo.png">
+  <meta property="og:type" content="website">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="올인원 필수암기">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="manifest" href="manifest.json">
+
+  <script>
+    var flet = {
+        pyodide: false,
+        multiView: false,
+        noCdn: false,
+        webSocketEndpoint: "/ws",
+        entrypointBaseUrl: "/",
+        assetBase: "/",
+        routeUrlStrategy: "path",
+        canvasKitBaseUrl: "/"
+    };
+  </script>
+  <script src="python.js"></script>
+</head>
+<body>
+  <div id="loading">
+    <style>
+      body { inset: 0; overflow: hidden; margin: 0; padding: 0; position: fixed; }
+      #loading { align-items: center; display: flex; height: 100%; justify-content: center; width: 100%; }
+      #loading img { animation: 1s ease-in-out 0s infinite alternate breathe; opacity: .66; transition: opacity .4s; }
+      @keyframes breathe { from { transform: scale(1) } to { transform: scale(0.95) } }
+    </style>
+    <img src="icons/loading-animation.png" alt="Loading..." />
+  </div>
+  <script src="flutter.js" defer></script>
+  <script>
+    window.addEventListener('load', function (ev) {
+      _flutter.loader.loadEntrypoint({
+        serviceWorker: { serviceWorkerVersion: null },
+        onEntrypointLoaded: function (engineInitializer) {
+          engineInitializer.initializeEngine().then(function (appRunner) { appRunner.runApp(); });
+        }
+      });
+    });
+  </script>
+</body>
+</html>
