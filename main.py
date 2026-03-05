@@ -229,7 +229,7 @@ def main(page: ft.Page):
                     ft.Button(content=ft.Text("🎲 전체 랜덤 문제 풀기"), on_click=lambda _: navigate("/random"), width=300),
                     ft.Button(content=ft.Text("🔄 스마트 오답 복습"), on_click=lambda _: navigate("/review"), width=300),
                     ft.Button(content=ft.Text("📊 취약점 진단 대시보드"), on_click=lambda _: navigate("/history"), width=300),
-                    ft.Button(content=ft.Text("☕ 스터디 카페 가기"), on_click=lambda _: page.launch_url("https://cafe.naver.com/yjbooks"), width=300),
+                    ft.Button(content=ft.Text("☕ 스터디 카페 가기"), url="https://cafe.naver.com/yjbooks", width=300),
                 ],
                 vertical_alignment=ft.MainAxisAlignment.CENTER,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER
@@ -588,5 +588,6 @@ def main(page: ft.Page):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=port)
+
 
 
