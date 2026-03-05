@@ -8,6 +8,7 @@ import psycopg2.extras
 from dotenv import load_dotenv
 
 # [보안] .env 파일에서 클라우드 DB 접속 주소 로드
+# 깃 허브 연동 테스트
 load_dotenv()
 DB_URL = os.environ.get("SUPABASE_DB_URL")
 
