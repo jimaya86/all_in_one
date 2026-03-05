@@ -167,18 +167,6 @@ def get_topic_statistics(session_id):
 def main(page: ft.Page):
     page.title = "올인원 필수암기 문제풀이"
     page.theme_mode = ft.ThemeMode.LIGHT
-
-    # 메타 태그 주입 (카톡, 노션, SNS 공유 시 노출됨)
-    page.meta_tags = [
-        # 1. 제목 설정
-        ft.MetaTag(property="og:title", content="올인원 필수암기 - 정보처리 지마쌤"),
-        # 2. 설명 설정
-        ft.MetaTag(property="og:description", content="가장 효율적인 기출 암기 솔루션! 지금 바로 퀴즈를 풀어보세요."),
-        # 3. 대표 이미지 설정 (이미지 주소가 필요합니다)
-        #ft.MetaTag(property="og:image", content="https://지마님의_로고_이미지_주소.png"),
-        # 4. 웹사이트 유형
-        ft.MetaTag(property="og:type", content="website"),
-    ]
     
     def navigate(route_name):
         page.route = route_name
@@ -600,6 +588,7 @@ def main(page: ft.Page):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     ft.app(target=main, view=ft.AppView.WEB_BROWSER, host="0.0.0.0", port=port)
+
 
 
 
